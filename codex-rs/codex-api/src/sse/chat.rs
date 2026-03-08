@@ -4,8 +4,7 @@ use crate::error::ApiError;
 use crate::telemetry::SseTelemetry;
 use codex_client::ByteStream;
 use codex_client::StreamResponse;
-use codex_protocol::models::ContentItem;
-use codex_protocol::models::ResponseItem;
+use codex_protocol::models::{ContentItem, ResponseItem};
 use codex_protocol::protocol::TokenUsage;
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
@@ -17,8 +16,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio::time::timeout;
-use tracing::debug;
-use tracing::trace;
+use tracing::{debug, trace};
 
 #[derive(Debug, Deserialize)]
 pub struct ChatCompletionChunk {
@@ -43,6 +41,12 @@ pub struct ChatCompletionDelta {
     pub content: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCallDelta>>,
+    /// Custom field used by DeepSeek-R1 and other reasoning models.
+    #[serde(default)]
+    pub reasoning_content: Option<String>,
+    /// Another common alias for reasoning content.
+    #[serde(default)]
+    pub reasoning: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -129,6 +133,10 @@ pub async fn process_chat_sse(
     let mut item_added_emitted = false;
     let mut tool_calls: HashMap<usize, ToolCallAccumulator> = HashMap::new();
 
+    // Reasoning tracking
+    let mut accumulated_reasoning = String::new();
+    let mut in_think_block = false;
+
     loop {
         let start = Instant::now();
         let response = timeout(idle_timeout, stream.next()).await;
@@ -150,6 +158,7 @@ pub async fn process_chat_sse(
                     &tx_event,
                     &response_id,
                     &accumulated_content,
+                    &accumulated_reasoning,
                     &tool_calls,
                     last_usage,
                     item_added_emitted,
@@ -171,6 +180,7 @@ pub async fn process_chat_sse(
                 &tx_event,
                 &response_id,
                 &accumulated_content,
+                &accumulated_reasoning,
                 &tool_calls,
                 last_usage,
                 item_added_emitted,
@@ -197,37 +207,100 @@ pub async fn process_chat_sse(
             last_usage = Some(usage.into());
         }
 
+        // Before processing choice deltas, ensure we have an active item if there is ANY delta
+        if !item_added_emitted && (!chunk.choices.is_empty()) {
+            item_added_emitted = true;
+            let item = ResponseItem::Message {
+                id: Some(format!("msg_{}", response_id)),
+                role: "assistant".to_string(),
+                content: vec![ContentItem::OutputText {
+                    text: String::new(),
+                }],
+                end_turn: None,
+                phase: None,
+            };
+            if tx_event
+                .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+
         for choice in chunk.choices {
+            // Handle explicit reasoning fields (DeepSeek/o1 style)
+            let reasoning_delta = choice.delta.reasoning_content.or(choice.delta.reasoning);
+            if let Some(rd) = reasoning_delta {
+                accumulated_reasoning.push_str(&rd);
+                // Use ReasoningSummaryDelta as it's typically mapped to the thinking block UI
+                let _ = tx_event
+                    .send(Ok(ResponseEvent::ReasoningSummaryDelta {
+                        delta: rd,
+                        summary_index: 0,
+                    }))
+                    .await;
+            }
+
             // Handle text content deltas
-            if let Some(content) = choice.delta.content {
-                // Emit OutputItemAdded before the very first text delta
-                if !item_added_emitted {
-                    item_added_emitted = true;
-                    let item = ResponseItem::Message {
-                        id: Some(format!("msg_{}", response_id)),
-                        role: "assistant".to_string(),
-                        content: vec![ContentItem::OutputText {
-                            text: String::new(),
-                        }],
-                        end_turn: None,
-                        phase: None,
-                    };
+            if let Some(mut content) = choice.delta.content {
+                let mut output_content = String::new();
+
+                // State machine to strip <think> tags in-flight
+                while !content.is_empty() {
+                    if !in_think_block {
+                        if let Some(start_pos) = content.find("<think>") {
+                            // Text before <think> is normal content
+                            let before = &content[..start_pos];
+                            if !before.is_empty() {
+                                output_content.push_str(before);
+                            }
+                            in_think_block = true;
+                            content = content[start_pos + 7..].to_string();
+                        } else {
+                            // No <think> tag found, all content is normal
+                            output_content.push_str(&content);
+                            content = String::new();
+                        }
+                    } else {
+                        // We are in a think block
+                        if let Some(end_pos) = content.find("</think>") {
+                            // Text before </think> is reasoning
+                            let reasoning = &content[..end_pos];
+                            if !reasoning.is_empty() {
+                                accumulated_reasoning.push_str(reasoning);
+                                let _ = tx_event
+                                    .send(Ok(ResponseEvent::ReasoningSummaryDelta {
+                                        delta: reasoning.to_string(),
+                                        summary_index: 0,
+                                    }))
+                                    .await;
+                            }
+                            in_think_block = false;
+                            content = content[end_pos + 8..].to_string();
+                        } else {
+                            // No </think> tag found, all content is reasoning
+                            accumulated_reasoning.push_str(&content);
+                            let _ = tx_event
+                                .send(Ok(ResponseEvent::ReasoningSummaryDelta {
+                                    delta: content,
+                                    summary_index: 0,
+                                }))
+                                .await;
+                            content = String::new();
+                        }
+                    }
+                }
+
+                if !output_content.is_empty() {
+                    accumulated_content.push_str(&output_content);
                     if tx_event
-                        .send(Ok(ResponseEvent::OutputItemAdded(item)))
+                        .send(Ok(ResponseEvent::OutputTextDelta(output_content)))
                         .await
                         .is_err()
                     {
                         return;
                     }
-                }
-
-                accumulated_content.push_str(&content);
-                if tx_event
-                    .send(Ok(ResponseEvent::OutputTextDelta(content)))
-                    .await
-                    .is_err()
-                {
-                    return;
                 }
             }
 
@@ -258,6 +331,7 @@ async fn finalize_stream(
     tx_event: &mpsc::Sender<Result<ResponseEvent, ApiError>>,
     response_id: &str,
     accumulated_content: &str,
+    accumulated_reasoning: &str,
     tool_calls: &HashMap<usize, ToolCallAccumulator>,
     last_usage: Option<TokenUsage>,
     item_added_emitted: bool,
