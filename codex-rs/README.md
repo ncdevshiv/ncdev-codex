@@ -89,8 +89,22 @@ codex --sandbox danger-full-access
 
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 In `workspace-write`, Codex also includes `~/.codex/memories` in its writable roots so memory maintenance does not require an extra approval.
+### Custom Model Providers
 
-## Code Organization
+Codex supports custom model providers via your `~/.codex/config.toml`. If your provider uses the OpenAI `/chat/completions` endpoint (like `kilo.ai`, `OpenRouter`, or local `Ollama` / `vLLM` setups), configure it with `wire_api = "chat"`.
+
+Example for a custom provider:
+
+```toml
+[model_providers.my-custom-provider]
+name = "My Provider"
+base_url = "https://api.example.com/v1"
+experimental_bearer_token = "your-api-key"
+wire_api = "chat"
+```
+
+The `chat` wire API automatically translates Codex's internal `Responses` protocol into standard OpenAI chat completion requests, including support for streaming and function calling.
+
 
 This folder is the root of a Cargo workspace. It contains quite a bit of experimental code, but here are the key crates:
 

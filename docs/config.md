@@ -50,3 +50,22 @@ override), not "inherit the global default". There is currently no separate
 config value for "follow the global default in Plan mode".
 
 Ctrl+C/Ctrl+D quitting uses a ~1 second double-press hint (`ctrl + c again to quit`).
+
+## Custom Model Providers
+
+Codex supports custom model providers via the `[model_providers]` table in `config.toml`. Current supported `wire_api` protocols:
+
+- `responses`: The modern Codex protocol (used by OpenAI).
+- `chat`: The standard OpenAI Chat Completions protocol (`/v1/chat/completions`).
+
+Use `wire_api = "chat"` for custom providers that are OpenAI-compatible but don't implement the full Responses API (e.g., `kilo.ai`, `OpenRouter`, `Ollama`).
+
+```toml
+[model_providers.my-provider]
+name = "My Custom Provider"
+base_url = "https://api.example.com/v1"
+experimental_bearer_token = "..."
+wire_api = "chat"
+```
+
+The `chat` adapter in Codex handles the translation of internal response items to chat messages and implements SSE parsing for tool calls and text deltas.
