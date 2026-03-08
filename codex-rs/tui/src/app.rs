@@ -3781,6 +3781,7 @@ impl App {
 
         let wire_api = match provider.wire_api {
             WireApi::Responses => "responses",
+            WireApi::Chat => "chat",
         };
         edits.push(ConfigEdit::SetPath {
             segments: vec![

@@ -35,6 +35,7 @@ use crate::api_bridge::CoreAuthProvider;
 use crate::api_bridge::auth_provider_from_auth;
 use crate::api_bridge::map_api_error;
 use crate::auth::UnauthorizedRecovery;
+use codex_api::ChatClient as ApiChatClient;
 use codex_api::CompactClient as ApiCompactClient;
 use codex_api::CompactionInput as ApiCompactionInput;
 use codex_api::MemoriesClient as ApiMemoriesClient;
@@ -819,13 +820,30 @@ impl ModelClientSession {
                 summary,
                 service_tier,
             )?;
-            let client = ApiResponsesClient::new(
-                transport,
-                client_setup.api_provider,
-                client_setup.api_auth,
-            )
-            .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
-            let stream_result = client.stream_request(request, options).await;
+            let is_chat = {
+                let provider = self
+                    .client
+                    .state
+                    .provider
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                provider.wire_api == WireApi::Chat
+            };
+
+            let stream_result = if is_chat {
+                let client =
+                    ApiChatClient::new(transport, client_setup.api_provider, client_setup.api_auth)
+                        .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+                client.stream_request(request, options).await
+            } else {
+                let client = ApiResponsesClient::new(
+                    transport,
+                    client_setup.api_provider,
+                    client_setup.api_auth,
+                )
+                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
+                client.stream_request(request, options).await
+            };
 
             match stream_result {
                 Ok(stream) => {
@@ -1044,6 +1062,18 @@ impl ModelClientSession {
                     }
                 }
 
+                self.stream_responses_api(
+                    prompt,
+                    model_info,
+                    session_telemetry,
+                    effort,
+                    summary,
+                    service_tier,
+                    turn_metadata_header,
+                )
+                .await
+            }
+            WireApi::Chat => {
                 self.stream_responses_api(
                     prompt,
                     model_info,

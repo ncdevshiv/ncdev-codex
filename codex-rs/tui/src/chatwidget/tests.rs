@@ -6979,7 +6979,8 @@ async fn multi_agent_enable_prompt_updates_feature_and_emits_notice() {
 async fn model_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5-codex")).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.open_model_popup();
+    let presets = chat.models_manager.try_list_models().unwrap();
+    chat.open_model_popup_with_presets(presets);
 
     let popup = render_bottom_popup(&chat, 80);
     assert_snapshot!("model_selection_popup", popup);
@@ -7418,7 +7419,8 @@ async fn feedback_good_result_consent_popup_includes_connectivity_diagnostics_fi
 async fn reasoning_popup_escape_returns_to_model_popup() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.1-codex-max")).await;
     chat.thread_id = Some(ThreadId::new());
-    chat.open_model_popup();
+    let presets = chat.models_manager.try_list_models().unwrap();
+    chat.open_model_popup_with_presets(presets);
 
     let preset = get_available_model(&chat, "gpt-5.1-codex-max");
     chat.open_reasoning_popup(preset);

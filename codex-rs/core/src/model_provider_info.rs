@@ -28,7 +28,7 @@ const MAX_REQUEST_MAX_RETRIES: u64 = 100;
 
 const OPENAI_PROVIDER_NAME: &str = "OpenAI";
 const OPENROUTER_PROVIDER_NAME: &str = "OpenRouter";
-const CHAT_WIRE_API_REMOVED_ERROR: &str = "`wire_api = \"chat\"` is no longer supported.\nHow to fix: set `wire_api = \"responses\"` in your provider config.\nMore info: https://github.com/openai/codex/discussions/7782";
+
 pub(crate) const LEGACY_OLLAMA_CHAT_PROVIDER_ID: &str = "ollama-chat";
 pub(crate) const OLLAMA_CHAT_PROVIDER_REMOVED_ERROR: &str = "`ollama-chat` is no longer supported.\nHow to fix: replace `ollama-chat` with `ollama` in `model_provider`, `oss_provider`, or `--local-provider`.\nMore info: https://github.com/openai/codex/discussions/7782";
 pub const OPENROUTER_PROVIDER_ID: &str = "openrouter";
@@ -40,6 +40,8 @@ pub enum WireApi {
     /// The Responses API exposed by OpenAI at `/v1/responses`.
     #[default]
     Responses,
+    /// The standard OpenAI Chat Completions API at `/v1/chat/completions`.
+    Chat,
 }
 
 impl<'de> Deserialize<'de> for WireApi {
@@ -50,8 +52,11 @@ impl<'de> Deserialize<'de> for WireApi {
         let value = String::deserialize(deserializer)?;
         match value.as_str() {
             "responses" => Ok(Self::Responses),
-            "chat" => Err(serde::de::Error::custom(CHAT_WIRE_API_REMOVED_ERROR)),
-            _ => Err(serde::de::Error::unknown_variant(&value, &["responses"])),
+            "chat" => Ok(Self::Chat),
+            _ => Err(serde::de::Error::unknown_variant(
+                &value,
+                &["responses", "chat"],
+            )),
         }
     }
 }
@@ -454,7 +459,7 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
     }
 
     #[test]
-    fn test_deserialize_chat_wire_api_shows_helpful_error() {
+    fn test_deserialize_chat_wire_api_succeeds() {
         let provider_toml = r#"
 name = "OpenAI using Chat Completions"
 base_url = "https://api.openai.com/v1"
@@ -462,7 +467,7 @@ env_key = "OPENAI_API_KEY"
 wire_api = "chat"
         "#;
 
-        let err = toml::from_str::<ModelProviderInfo>(provider_toml).unwrap_err();
-        assert!(err.to_string().contains(CHAT_WIRE_API_REMOVED_ERROR));
+        let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+        assert_eq!(provider.wire_api, WireApi::Chat);
     }
 }
